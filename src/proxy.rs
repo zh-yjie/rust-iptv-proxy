@@ -30,6 +30,7 @@ fn filter_reordered_seq(seq: &mut u16, next: u16) -> bool {
 
 pub(crate) fn rtsp(url: String, if_name: Option<String>) -> impl Stream<Item = Result<Bytes>> {
     stream! {
+        info!("RTSP proxy {url}");
         let mut options = SessionOptions::default().follow_redirects(true);
         #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
         if let Some(ref i) = if_name {

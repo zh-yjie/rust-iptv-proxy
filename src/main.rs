@@ -1,11 +1,12 @@
 use actix_web::{
     get,
+    http::header,
     web::{Data, Path, Query},
     App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use anyhow::{anyhow, Result};
 use argh::FromArgs;
-use chrono::{FixedOffset, TimeZone, Utc};
+use chrono::{FixedOffset, Local, TimeZone, Utc};
 use log::{debug, warn};
 use reqwest::Client;
 use std::{
@@ -172,7 +173,10 @@ async fn xmltv(args: Data<Args>, req: HttpRequest) -> impl Responder {
         while let Some(res) = set.join_next().await {
             match res {
                 Ok((_, Ok(reader))) => readers.push(reader),
-                Ok((i, Err(e))) => warn!("Failed to parse extra xmltv ({}): {}", args.extra_xmltv[i], e),
+                Ok((i, Err(e))) => warn!(
+                    "Failed to parse extra xmltv ({}): {}",
+                    args.extra_xmltv[i], e
+                ),
                 Err(e) => warn!("Task join error parsing extra xmltv: {}", e),
             }
         }
@@ -224,6 +228,16 @@ async fn playlist(args: Data<Args>, req: HttpRequest) -> impl Responder {
     debug!("Get playlist");
     let scheme = req.connection_info().scheme().to_owned();
     let host = req.connection_info().host().to_owned();
+    let user_agent = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("Unknown");
+    let playseek = if user_agent.to_lowercase().contains("kodi") {
+        "{utc:YmdHMS}-{utcend:YmdHMS}"
+    } else {
+        "${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
+    };
     match get_channels(&args, false, &scheme, &host).await {
         Err(e) => {
             if let Some(old_playlist) = OLD_PLAYLIST.try_lock().ok().and_then(|f| f.to_owned()) {
@@ -246,8 +260,7 @@ async fn playlist(args: Data<Args>, req: HttpRequest) -> impl Responder {
                         } else {
                             "普通频道"
                         };
-                        let catch_up = format!(r#" catchup="append" catchup-source="{}?playseek=${{(b)yyyyMMddHHmmss}}-${{(e)yyyyMMddHHmmss}}" "#,
-                            c.igmp.as_ref().map(|_| &c.rtsp).unwrap_or(&"".to_string()));
+                        let catch_up = c.time_shift_url.map(|url| format!(r#" catchup="default" catchup-source="{}&playseek={}" "#, url, playseek)).unwrap_or_default();
                         format!(
                             r#"#EXTINF:-1 tvg-id="{0}" tvg-name="{1}" tvg-chno="{0}"{3}tvg-logo="{4}://{5}/logo/{6}.png" group-title="{2}",{1}"#,
                             c.id, c.name, group, catch_up, scheme, host, c.id
@@ -289,14 +302,26 @@ async fn playlist(args: Data<Args>, req: HttpRequest) -> impl Responder {
 #[get("/rtsp/{tail:.*}")]
 async fn rtsp(
     args: Data<Args>,
-    mut path: Path<String>,
-    mut params: Query<BTreeMap<String, String>>,
+    params: Query<BTreeMap<String, String>>,
+    req: HttpRequest,
 ) -> impl Responder {
-    let path = &mut *path;
-    let params = &mut *params;
-    let mut params = params.iter().map(|(k, v)| format!("{}={}", k, v));
-    let param = params.next().unwrap_or("".to_string());
-    let param = params.fold(param, |o, q| format!("{}&{}", o, q));
+    let path: String = req.match_info().query("tail").into();
+    let mut param = req.query_string().to_string();
+    if !params.contains_key("playseek") {
+        if params.contains_key("utc") {
+            let start = params
+                .get("utc")
+                .map(|utc| utc.parse::<i64>().expect("Invalid number") * 1000)
+                .map(|utc| to_xmltv_time(utc).unwrap())
+                .unwrap();
+            let end = params
+                .get("lutc")
+                .map(|lutc| lutc.parse::<i64>().expect("Invalid number") * 1000)
+                .map(|lutc| to_xmltv_time(lutc).unwrap())
+                .unwrap_or(to_xmltv_time(Local::now().timestamp_millis()).unwrap());
+            param = format!("{}&playseek={}-{}", param, start, end);
+        }
+    }
     HttpResponse::Ok().streaming(proxy::rtsp(
         format!("rtsp://{}?{}", path, param),
         args.interface.clone(),
