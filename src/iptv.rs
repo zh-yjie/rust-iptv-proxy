@@ -78,6 +78,7 @@ pub(crate) struct Channel {
     pub(crate) rtsp: String,
     pub(crate) igmp: Option<String>,
     pub(crate) epg: Vec<Program>,
+    pub(crate) time_shift_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -225,14 +226,29 @@ pub(crate) async fn get_channels(
                         }),
                     )
                 })
-                .map(|u| (i, n, u))
+                .map(|u| (i, n, u, m))
         })
-        .map(|(i, n, (rtsp, igmp))| Channel {
+        .filter_map(|(i, n, u, m)| {
+            Some((
+                i,
+                n,
+                u,
+                m.get("TimeShiftURL").map(|url| {
+                    if args.rtsp_proxy {
+                        url.replace("rtsp://", &format!("{}://{}/rtsp/", scheme, host))
+                    } else {
+                        url.to_string()
+                    }
+                }),
+            ))
+        })
+        .map(|(i, n, (rtsp, igmp), time_shift_url)| Channel {
             id: i,
             name: n.to_owned(),
             rtsp,
             igmp,
             epg: vec![],
+            time_shift_url,
         })
         .collect::<Vec<_>>();
 
