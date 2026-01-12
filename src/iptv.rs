@@ -228,8 +228,8 @@ pub(crate) async fn get_channels(
                 })
                 .map(|u| (i, n, u, m))
         })
-        .filter_map(|(i, n, u, m)| {
-            Some((
+        .map(|(i, n, u, m)| {
+            (
                 i,
                 n,
                 u,
@@ -240,7 +240,7 @@ pub(crate) async fn get_channels(
                         url.to_string()
                     }
                 }),
-            ))
+            )
         })
         .map(|(i, n, (rtsp, igmp), time_shift_url)| Channel {
             id: i,
